@@ -63,3 +63,21 @@ def k8s_model_from_dict(model_class, model_dict: Dict[str, Any]):
             kwargs[attr] = _k8s_value(value, attr_type, mapped_attr)
 
     return model_class(**kwargs)
+
+
+def backcompat_model_dict(model_class, model_dict: Dict[str, Any]):
+    # Filter dictionaries that were once passed directly into the constructor of a kubernetes model
+    # object (which required underscore_case entries for the top-level keys, but camelCase for any
+    # nested keys), but are now being passed into k8s_model_from_dict, which means all levels are
+    # expected to be in camelCase
+
+    attribute_map = model_class.attribute_map
+
+    filtered_map = {}
+    for key, val in model_dict.items():
+        if key in attribute_map:
+            filtered_map[attribute_map[key]] = val
+        else:
+            filtered_map[key] = val
+
+    return filtered_map

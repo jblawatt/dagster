@@ -1,10 +1,11 @@
+import copy
 import hashlib
 import json
 import os
 import random
 import string
 from collections import namedtuple
-from typing import List
+from typing import Any, Dict, List, Optional
 
 import kubernetes
 
@@ -17,7 +18,7 @@ from dagster.core.errors import DagsterInvalidConfigError
 from dagster.serdes import whitelist_for_serdes
 from dagster.utils import frozentags, merge_dicts
 
-from .models import k8s_model_from_dict
+from .models import backcompat_model_dict, k8s_model_from_dict
 from .utils import sanitize_k8s_label
 
 # To retry step job, users should raise RetryRequested() so that the dagster system is aware of the
@@ -59,8 +60,8 @@ USER_DEFINED_K8S_CONFIG_SCHEMA = Shape(
 )
 
 DEFAULT_JOB_SPEC_CONFIG = {
-    "ttl_seconds_after_finished": DEFAULT_K8S_JOB_TTL_SECONDS_AFTER_FINISHED,
-    "backoff_limit": DEFAULT_K8S_JOB_BACKOFF_LIMIT,
+    "ttlSecondsAfterFinished": DEFAULT_K8S_JOB_TTL_SECONDS_AFTER_FINISHED,
+    "backoffLimit": DEFAULT_K8S_JOB_BACKOFF_LIMIT,
 }
 
 
@@ -88,6 +89,36 @@ class UserDefinedDagsterK8sConfig(
         job_config = check.opt_dict_param(job_config, "job_config", key_type=str)
         job_metadata = check.opt_dict_param(job_metadata, "job_metadata", key_type=str)
         job_spec_config = check.opt_dict_param(job_spec_config, "job_spec_config", key_type=str)
+
+        if container_config:
+            container_config = backcompat_model_dict(
+                kubernetes.client.V1Container, container_config
+            )
+
+            # special-case envFrom as well which previously allowed secret_ref instead of secretRef
+            # and config_map_ref instead of configMapRef
+            if "envFrom" in container_config:
+                container_config["envFrom"] = [
+                    backcompat_model_dict(kubernetes.client.V1EnvFromSource, env_from)
+                    for env_from in container_config["envFrom"]
+                ]
+
+        if pod_template_spec_metadata:
+            pod_template_spec_metadata = backcompat_model_dict(
+                kubernetes.client.V1ObjectMeta, pod_template_spec_metadata
+            )
+
+        if pod_spec_config:
+            pod_spec_config = backcompat_model_dict(kubernetes.client.V1PodSpec, pod_spec_config)
+
+        if job_config:
+            job_config = backcompat_model_dict(kubernetes.client.V1Job, job_config)
+
+        if job_metadata:
+            job_metadata = backcompat_model_dict(kubernetes.client.V1ObjectMeta, job_metadata)
+
+        if job_spec_config:
+            job_spec_config = backcompat_model_dict(kubernetes.client.V1JobSpec, job_spec_config)
 
         return super(UserDefinedDagsterK8sConfig, cls).__new__(
             cls,
@@ -258,7 +289,7 @@ class DagsterK8sJobConfig(
             dagster_home=check.opt_str_param(
                 dagster_home, "dagster_home", default=DAGSTER_HOME_DEFAULT
             ),
-            image_pull_policy=check.opt_str_param(image_pull_policy, "image_pull_policy"),
+            image_pull_policy=check.opt_str_param(image_pull_policy, "image_pull_policy", "Always"),
             image_pull_secrets=check.opt_list_param(
                 image_pull_secrets, "image_pull_secrets", of_type=dict
             ),
@@ -419,31 +450,20 @@ class DagsterK8sJobConfig(
         }
 
     @property
-    def env(self) -> List[kubernetes.client.V1EnvVar]:
-        return [
-            kubernetes.client.V1EnvVar(name=key, value=os.getenv(key))
-            for key in (self.env_vars or [])
-        ]
+    def env(self) -> List[Dict[str, Optional[str]]]:
+        return [{"name": key, "value": os.getenv(key)} for key in (self.env_vars or [])]
 
     @property
-    def env_from_sources(self):
+    def env_from_sources(self) -> List[Dict[str, Any]]:
         """This constructs a list of env_from sources. Along with a default base environment
         config map which we always load, the ConfigMaps and Secrets specified via
         env_config_maps and env_secrets will be pulled into the job construction here.
         """
         config_maps = [
-            kubernetes.client.V1EnvFromSource(
-                config_map_ref=kubernetes.client.V1ConfigMapEnvSource(name=config_map)
-            )
-            for config_map in self.env_config_maps
+            {"configMapRef": {"name": config_map}} for config_map in self.env_config_maps
         ]
 
-        secrets = [
-            kubernetes.client.V1EnvFromSource(
-                secret_ref=kubernetes.client.V1SecretEnvSource(name=secret)
-            )
-            for secret in self.env_secrets
-        ]
+        secrets = [{"secretRef": {"name": secret}} for secret in self.env_secrets]
 
         return config_maps + secrets
 
@@ -529,146 +549,132 @@ def construct_dagster_k8s_job(
     additional_labels = {k: sanitize_k8s_label(v) for k, v in (labels or {}).items()}
     dagster_labels = merge_dicts(k8s_common_labels, additional_labels)
 
-    env = [kubernetes.client.V1EnvVar(name="DAGSTER_HOME", value=job_config.dagster_home)]
+    env = [{"name": "DAGSTER_HOME", "value": job_config.dagster_home}]
     if job_config.postgres_password_secret:
         env.append(
-            kubernetes.client.V1EnvVar(
-                name=DAGSTER_PG_PASSWORD_ENV_VAR,
-                value_from=kubernetes.client.V1EnvVarSource(
-                    secret_key_ref=kubernetes.client.V1SecretKeySelector(
-                        name=job_config.postgres_password_secret, key=DAGSTER_PG_PASSWORD_SECRET_KEY
-                    )
-                ),
-            )
+            {
+                "name": DAGSTER_PG_PASSWORD_ENV_VAR,
+                "valueFrom": {
+                    "secretKeyRef": {
+                        "name": job_config.postgres_password_secret,
+                        "key": DAGSTER_PG_PASSWORD_SECRET_KEY,
+                    }
+                },
+            }
         )
 
     additional_k8s_env_vars = []
     if env_vars:
         for key, value in env_vars.items():
-            additional_k8s_env_vars.append(kubernetes.client.V1EnvVar(name=key, value=value))
+            additional_k8s_env_vars.append({"name": key, "value": value})
 
-    user_defined_k8s_env_vars = user_defined_k8s_config.container_config.pop("env", [])
+    container_config = copy.deepcopy(user_defined_k8s_config.container_config)
+
+    user_defined_k8s_env_vars = container_config.pop("env", [])
     for env_var in user_defined_k8s_env_vars:
-        additional_k8s_env_vars.append(
-            k8s_model_from_dict(kubernetes.client.models.V1EnvVar, env_var)
-        )
+        additional_k8s_env_vars.append(env_var)
 
-    user_defined_k8s_env_from = user_defined_k8s_config.container_config.pop("env_from", [])
+    user_defined_k8s_env_from = container_config.pop("envFrom", [])
     additional_k8s_env_from = []
     for env_from in user_defined_k8s_env_from:
-        config_map_ref_args = env_from.get("config_map_ref")
-        config_map_ref = (
-            kubernetes.client.V1ConfigMapEnvSource(**config_map_ref_args)
-            if config_map_ref_args
-            else None
-        )
-        secret_ref_args = env_from.get("secret_ref")
-        secret_ref = (
-            kubernetes.client.V1SecretEnvSource(**secret_ref_args) if secret_ref_args else None
-        )
+        additional_k8s_env_from.append(env_from)
 
-        additional_k8s_env_from.append(
-            kubernetes.client.V1EnvFromSource(
-                config_map_ref=config_map_ref, prefix=env_from.get("prefix"), secret_ref=secret_ref
-            )
-        )
+    job_image = container_config.pop("image", job_config.job_image)
 
-    volume_mounts = [
-        kubernetes.client.V1VolumeMount(
-            name="dagster-instance",
-            mount_path="{dagster_home}/dagster.yaml".format(dagster_home=job_config.dagster_home),
-            sub_path="dagster.yaml",
-        )
-    ] + [
-        k8s_model_from_dict(kubernetes.client.models.V1VolumeMount, mount)
-        for mount in job_config.volume_mounts
-    ]
+    user_defined_k8s_volume_mounts = container_config.pop("volumeMounts", [])
 
-    job_image = user_defined_k8s_config.container_config.pop("image", job_config.job_image)
-
-    user_defined_k8s_volume_mounts = user_defined_k8s_config.container_config.pop(
-        "volume_mounts", []
-    )
-    for volume_mount in user_defined_k8s_volume_mounts:
-        volume_mounts.append(
-            k8s_model_from_dict(kubernetes.client.models.V1VolumeMount, volume_mount)
-        )
-
-    job_container = kubernetes.client.V1Container(
-        name="dagster",
-        image=job_image,
-        args=args,
-        image_pull_policy=job_config.image_pull_policy,
-        env=env + job_config.env + additional_k8s_env_vars,
-        env_from=job_config.env_from_sources + additional_k8s_env_from,
-        volume_mounts=volume_mounts,
-        **user_defined_k8s_config.container_config,
+    volume_mounts = (
+        [
+            {
+                "name": "dagster-instance",
+                "mountPath": "{dagster_home}/dagster.yaml".format(
+                    dagster_home=job_config.dagster_home
+                ),
+                "subPath": "dagster.yaml",
+            }
+        ]
+        + job_config.volume_mounts
+        + user_defined_k8s_volume_mounts
     )
 
-    user_defined_volumes = user_defined_k8s_config.pod_spec_config.pop("volumes", [])
+    container_config = merge_dicts(
+        container_config,
+        {
+            "name": "dagster",
+            "image": job_image,
+            "args": args,
+            "imagePullPolicy": job_config.image_pull_policy,
+            "env": env + job_config.env + additional_k8s_env_vars,
+            "envFrom": job_config.env_from_sources + additional_k8s_env_from,
+            "volumeMounts": volume_mounts,
+        },
+    )
 
-    volumes = [
-        kubernetes.client.V1Volume(
-            name="dagster-instance",
-            config_map=kubernetes.client.V1ConfigMapVolumeSource(
-                name=job_config.instance_config_map
-            ),
-        )
-    ]
+    pod_spec_config = copy.deepcopy(user_defined_k8s_config.pod_spec_config)
 
-    for volume in job_config.volumes + user_defined_volumes:
-        new_volume = k8s_model_from_dict(
-            kubernetes.client.models.V1Volume,
-            volume,
-        )
-        volumes.append(new_volume)
+    user_defined_volumes = pod_spec_config.pop("volumes", [])
+
+    volumes = (
+        [{"name": "dagster-instance", "configMap": {"name": job_config.instance_config_map}}]
+        + job_config.volumes
+        + user_defined_volumes
+    )
 
     # If the user has defined custom labels, remove them from the pod_template_spec_metadata
     # key and merge them with the dagster labels
-    user_defined_pod_template_labels = user_defined_k8s_config.pod_template_spec_metadata.pop(
-        "labels", {}
+    pod_template_spec_metadata = copy.deepcopy(user_defined_k8s_config.pod_template_spec_metadata)
+    user_defined_pod_template_labels = pod_template_spec_metadata.pop("labels", {})
+
+    service_account_name = pod_spec_config.pop(
+        "serviceAccountName", job_config.service_account_name
     )
 
-    service_account_name = user_defined_k8s_config.pod_spec_config.pop(
-        "service_account_name", job_config.service_account_name
-    )
-
-    template = kubernetes.client.V1PodTemplateSpec(
-        metadata=kubernetes.client.V1ObjectMeta(
-            name=pod_name,
-            labels=merge_dicts(dagster_labels, user_defined_pod_template_labels, job_config.labels),
-            **user_defined_k8s_config.pod_template_spec_metadata,
+    template = {
+        "metadata": merge_dicts(
+            pod_template_spec_metadata,
+            {
+                "name": pod_name,
+                "labels": merge_dicts(
+                    dagster_labels, user_defined_pod_template_labels, job_config.labels
+                ),
+            },
         ),
-        spec=kubernetes.client.V1PodSpec(
-            image_pull_secrets=[
-                kubernetes.client.V1LocalObjectReference(name=x["name"])
-                for x in job_config.image_pull_secrets
-            ],
-            service_account_name=service_account_name,
-            restart_policy="Never",
-            containers=[job_container],
-            volumes=volumes,
-            **user_defined_k8s_config.pod_spec_config,
+        "spec": merge_dicts(
+            pod_spec_config,
+            {
+                "imagePullSecrets": job_config.image_pull_secrets,
+                "serviceAccountName": service_account_name,
+                "restartPolicy": "Never",
+                "containers": [
+                    container_config,
+                ],
+                "volumes": volumes,
+            },
         ),
-    )
+    }
 
     job_spec_config = merge_dicts(
         DEFAULT_JOB_SPEC_CONFIG,
         user_defined_k8s_config.job_spec_config,
+        {"template": template},
     )
 
-    job = kubernetes.client.V1Job(
-        api_version="batch/v1",
-        kind="Job",
-        metadata=kubernetes.client.V1ObjectMeta(
-            name=job_name, labels=dagster_labels, **user_defined_k8s_config.job_metadata
+    job = k8s_model_from_dict(
+        kubernetes.client.V1Job,
+        merge_dicts(
+            user_defined_k8s_config.job_config,
+            {
+                "apiVersion": "batch/v1",
+                "kind": "Job",
+                "metadata": merge_dicts(
+                    user_defined_k8s_config.job_metadata,
+                    {"name": job_name, "labels": dagster_labels},
+                ),
+                "spec": job_spec_config,
+            },
         ),
-        spec=kubernetes.client.V1JobSpec(
-            template=template,
-            **job_spec_config,
-        ),
-        **user_defined_k8s_config.job_config,
     )
+
     return job
 
 

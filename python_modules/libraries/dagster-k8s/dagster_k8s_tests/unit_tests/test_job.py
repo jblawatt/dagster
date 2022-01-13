@@ -33,7 +33,7 @@ def test_job_serialization():
 def test_user_defined_k8s_config_serialization():
     cfg = UserDefinedDagsterK8sConfig(
         container_config={
-            "resouces": {
+            "resources": {
                 "requests": {"cpu": "250m", "memory": "64Mi"},
                 "limits": {"cpu": "500m", "memory": "2560Mi"},
             }
@@ -231,11 +231,12 @@ def test_construct_dagster_k8s_job_with_user_defined_env():
     }
 
 
-def test_construct_dagster_k8s_job_with_user_defined_env_from():
+def test_construct_dagster_k8s_job_with_user_defined_env_from_backcompat():
     @graph
     def user_defined_k8s_env_from_tags_graph():
         pass
 
+    # These fields still work even when using underscore keys
     user_defined_k8s_config = get_user_defined_k8s_config(
         user_defined_k8s_env_from_tags_graph.to_job(
             tags={
@@ -289,11 +290,71 @@ def test_construct_dagster_k8s_job_with_user_defined_env_from():
     assert env_from_mapping["user_secret_ref_two"]
 
 
-def test_construct_dagster_k8s_job_with_user_defined_volume_mounts():
+def test_construct_dagster_k8s_job_with_user_defined_env_from():
+    @graph
+    def user_defined_k8s_env_from_tags_graph():
+        pass
+
+    # These fields still work even when using underscore keys
+    user_defined_k8s_config = get_user_defined_k8s_config(
+        user_defined_k8s_env_from_tags_graph.to_job(
+            tags={
+                USER_DEFINED_K8S_CONFIG_KEY: {
+                    "container_config": {
+                        "envFrom": [
+                            {
+                                "configMapRef": {
+                                    "name": "user_config_map_ref",
+                                    "optional": "True",
+                                }
+                            },
+                            {"secretRef": {"name": "user_secret_ref_one", "optional": "True"}},
+                            {
+                                "secretRef": {
+                                    "name": "user_secret_ref_two",
+                                    "optional": "False",
+                                },
+                                "prefix": "with_prefix",
+                            },
+                        ]
+                    }
+                }
+            }
+        ).tags
+    )
+
+    cfg = DagsterK8sJobConfig(
+        job_image="test/foo:latest",
+        dagster_home="/opt/dagster/dagster_home",
+        instance_config_map="some-instance-configmap",
+        env_config_maps=["config_map"],
+        env_secrets=["secret"],
+    )
+
+    job = construct_dagster_k8s_job(
+        cfg, ["foo", "bar"], "job", user_defined_k8s_config=user_defined_k8s_config
+    ).to_dict()
+
+    env_from = job["spec"]["template"]["spec"]["containers"][0]["env_from"]
+    env_from_mapping = {
+        (env_var.get("config_map_ref") or env_var.get("secret_ref")).get("name"): env_var
+        for env_var in env_from
+    }
+
+    assert len(env_from_mapping) == 5
+    assert env_from_mapping["config_map"]
+    assert env_from_mapping["user_config_map_ref"]
+    assert env_from_mapping["secret"]
+    assert env_from_mapping["user_secret_ref_one"]
+    assert env_from_mapping["user_secret_ref_two"]
+
+
+def test_construct_dagster_k8s_job_with_user_defined_volume_mounts_backcompat():
     @graph
     def user_defined_k8s_volume_mounts_tags_graph():
         pass
 
+    # volume_mounts still work even when using underscore keys
     user_defined_k8s_config = get_user_defined_k8s_config(
         user_defined_k8s_volume_mounts_tags_graph.to_job(
             tags={
@@ -340,11 +401,63 @@ def test_construct_dagster_k8s_job_with_user_defined_volume_mounts():
     assert volume_mounts_mapping["a_volume_mount_two"]
 
 
-def test_construct_dagster_k8s_job_with_user_defined_service_account_name():
+def test_construct_dagster_k8s_job_with_user_defined_volume_mounts():
+    @graph
+    def user_defined_k8s_volume_mounts_tags_graph():
+        pass
+
+    user_defined_k8s_config = get_user_defined_k8s_config(
+        user_defined_k8s_volume_mounts_tags_graph.to_job(
+            tags={
+                USER_DEFINED_K8S_CONFIG_KEY: {
+                    "container_config": {
+                        "volumeMounts": [
+                            {
+                                "mountPath": "mount_path",
+                                "mountPropagation": "mount_propagation",
+                                "name": "a_volume_mount_one",
+                                "readOnly": "False",
+                                "subPath": "path/",
+                            },
+                            {
+                                "mountPath": "mount_path",
+                                "mountPropagation": "mount_propagation",
+                                "name": "a_volume_mount_two",
+                                "readOnly": "False",
+                                "subPathExpr": "path/",
+                            },
+                        ]
+                    }
+                }
+            }
+        ).tags
+    )
+
+    cfg = DagsterK8sJobConfig(
+        job_image="test/foo:latest",
+        dagster_home="/opt/dagster/dagster_home",
+        instance_config_map="some-instance-configmap",
+    )
+
+    job = construct_dagster_k8s_job(
+        cfg, ["foo", "bar"], "job", user_defined_k8s_config=user_defined_k8s_config
+    ).to_dict()
+
+    volume_mounts = job["spec"]["template"]["spec"]["containers"][0]["volume_mounts"]
+    volume_mounts_mapping = {volume_mount["name"]: volume_mount for volume_mount in volume_mounts}
+
+    assert len(volume_mounts_mapping) == 3
+    assert volume_mounts_mapping["dagster-instance"]
+    assert volume_mounts_mapping["a_volume_mount_one"]
+    assert volume_mounts_mapping["a_volume_mount_two"]
+
+
+def test_construct_dagster_k8s_job_with_user_defined_service_account_name_back_compat():
     @graph
     def user_defined_k8s_service_account_name_tags_graph():
         pass
 
+    # service_account_name still works
     user_defined_k8s_config = get_user_defined_k8s_config(
         user_defined_k8s_service_account_name_tags_graph.to_job(
             tags={
@@ -372,15 +485,49 @@ def test_construct_dagster_k8s_job_with_user_defined_service_account_name():
     assert service_account_name == "this-should-take-precedence"
 
 
-def test_construct_dagster_k8s_job_with_ttl():
+def test_construct_dagster_k8s_job_with_user_defined_service_account_name():
+    @graph
+    def user_defined_k8s_service_account_name_tags_graph():
+        pass
+
+    user_defined_k8s_config = get_user_defined_k8s_config(
+        user_defined_k8s_service_account_name_tags_graph.to_job(
+            tags={
+                USER_DEFINED_K8S_CONFIG_KEY: {
+                    "pod_spec_config": {
+                        "serviceAccountName": "this-should-take-precedence",
+                    },
+                },
+            },
+        ).tags
+    )
+
+    cfg = DagsterK8sJobConfig(
+        job_image="test/foo:latest",
+        dagster_home="/opt/dagster/dagster_home",
+        instance_config_map="some-instance-configmap",
+        service_account_name="this-should-be-overriden",
+    )
+
+    job = construct_dagster_k8s_job(
+        cfg, ["foo", "bar"], "job", user_defined_k8s_config=user_defined_k8s_config
+    ).to_dict()
+
+    service_account_name = job["spec"]["template"]["spec"]["service_account_name"]
+    assert service_account_name == "this-should-take-precedence"
+
+
+def test_construct_dagster_k8s_job_with_ttl_backcompat():
     cfg = DagsterK8sJobConfig(
         job_image="test/foo:latest",
         dagster_home="/opt/dagster/dagster_home",
         instance_config_map="test",
     )
     job = construct_dagster_k8s_job(cfg, [], "job123").to_dict()
+
     assert job["spec"]["ttl_seconds_after_finished"] == DEFAULT_K8S_JOB_TTL_SECONDS_AFTER_FINISHED
 
+    # Setting ttl_seconds_after_finished still works
     user_defined_cfg = UserDefinedDagsterK8sConfig(
         job_spec_config={"ttl_seconds_after_finished": 0},
     )
@@ -388,6 +535,41 @@ def test_construct_dagster_k8s_job_with_ttl():
         cfg, [], "job123", user_defined_k8s_config=user_defined_cfg
     ).to_dict()
     assert job["spec"]["ttl_seconds_after_finished"] == 0
+
+
+def test_construct_dagster_k8s_job_with_ttl():
+    cfg = DagsterK8sJobConfig(
+        job_image="test/foo:latest",
+        dagster_home="/opt/dagster/dagster_home",
+        instance_config_map="test",
+    )
+    job = construct_dagster_k8s_job(cfg, [], "job123").to_dict()
+
+    assert job["spec"]["ttl_seconds_after_finished"] == DEFAULT_K8S_JOB_TTL_SECONDS_AFTER_FINISHED
+
+    user_defined_cfg = UserDefinedDagsterK8sConfig(
+        job_spec_config={"ttlSecondsAfterFinished": 0},
+    )
+    job = construct_dagster_k8s_job(
+        cfg, [], "job123", user_defined_k8s_config=user_defined_cfg
+    ).to_dict()
+    assert job["spec"]["ttl_seconds_after_finished"] == 0
+
+
+def test_construct_dagster_k8s_job_with_invalid_key_raises_error():
+    cfg = DagsterK8sJobConfig(
+        job_image="test/foo:latest",
+        dagster_home="/opt/dagster/dagster_home",
+        instance_config_map="test",
+    )
+
+    user_defined_cfg = UserDefinedDagsterK8sConfig(
+        job_spec_config={"nonExistantKey": "nonExistantValue"},
+    )
+    with pytest.raises(
+        Exception, match="Unexpected keys in model class V1JobSpec: {'nonExistantKey'}"
+    ):
+        construct_dagster_k8s_job(cfg, [], "job123", user_defined_k8s_config=user_defined_cfg)
 
 
 def test_construct_dagster_k8s_job_with_labels():
