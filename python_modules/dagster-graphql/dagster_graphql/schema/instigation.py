@@ -68,7 +68,7 @@ class GrapheneSensorData(graphene.ObjectType):
         super().__init__(
             lastTickTimestamp=instigator_data.last_tick_timestamp,
             lastRunKey=instigator_data.last_run_key,
-            lastCursor = instigator_data.cursor,
+            lastCursor=instigator_data.cursor,
         )
 
 
@@ -365,7 +365,9 @@ class GrapheneInstigationState(graphene.ObjectType):
         )
         return GrapheneInstigationTick(graphene_info, matches[0]) if matches else None
 
-    def resolve_ticks(self, graphene_info, dayRange=None, dayOffset=None, limit=None, cursor=None, statuses=None):
+    def resolve_ticks(
+        self, graphene_info, dayRange=None, dayOffset=None, limit=None, cursor=None, statuses=None
+    ):
         before = None
         if dayOffset:
             before = pendulum.now("UTC").subtract(days=dayOffset).timestamp()
@@ -377,13 +379,21 @@ class GrapheneInstigationState(graphene.ObjectType):
                 except (ValueError, IndexError):
                     pass
 
-        after = pendulum.now("UTC").subtract(days=dayRange + (dayOffset or 0)).timestamp() if dayRange else None
+        after = (
+            pendulum.now("UTC").subtract(days=dayRange + (dayOffset or 0)).timestamp()
+            if dayRange
+            else None
+        )
         if statuses:
             statuses = [TickStatus(status) for status in statuses]
         return [
             GrapheneInstigationTick(graphene_info, tick)
             for tick in graphene_info.context.instance.get_ticks(
-                self._instigator_state.instigator_origin_id, before=before, after=after, limit=limit, statuses=statuses
+                self._instigator_state.instigator_origin_id,
+                before=before,
+                after=after,
+                limit=limit,
+                statuses=statuses,
             )
         ]
 

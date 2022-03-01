@@ -150,7 +150,9 @@ class SqlScheduleStorage(ScheduleStorage):
             .order_by(JobTickTable.c.timestamp.desc())
         )
 
-        query = self._add_filter_limit(query, before=before, after=after, limit=limit, statuses=statuses)
+        query = self._add_filter_limit(
+            query, before=before, after=after, limit=limit, statuses=statuses
+        )
 
         rows = self.execute(query)
         return list(

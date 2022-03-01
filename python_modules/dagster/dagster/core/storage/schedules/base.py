@@ -58,7 +58,12 @@ class ScheduleStorage(abc.ABC, MayHaveInstanceWeakref):
 
     @abc.abstractmethod
     def get_ticks(
-        self, origin_id: str, before: float = None, after: float = None, limit: int = None, statuses: Optional[List[TickStatus]]=None,
+        self,
+        origin_id: str,
+        before: float = None,
+        after: float = None,
+        limit: int = None,
+        statuses: Optional[List[TickStatus]] = None,
     ) -> Iterable[InstigatorTick]:
         """Get the ticks for a given instigator.
 

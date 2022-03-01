@@ -1758,7 +1758,9 @@ records = instance.get_event_records(
 
     @traced
     def get_ticks(self, origin_id, before=None, after=None, limit=None, statuses=None):
-        return self._schedule_storage.get_ticks(origin_id, before=before, after=after, limit=limit, statuses=statuses)
+        return self._schedule_storage.get_ticks(
+            origin_id, before=before, after=after, limit=limit, statuses=statuses
+        )
 
     def create_tick(self, tick_data):
         return self._schedule_storage.create_tick(tick_data)
