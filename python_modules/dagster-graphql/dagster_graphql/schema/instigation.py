@@ -58,6 +58,7 @@ class GrapheneInstigationTickStatus(graphene.Enum):
 class GrapheneSensorData(graphene.ObjectType):
     lastTickTimestamp = graphene.Float()
     lastRunKey = graphene.String()
+    lastCursor = graphene.String()
 
     class Meta:
         name = "SensorData"
@@ -67,6 +68,7 @@ class GrapheneSensorData(graphene.ObjectType):
         super().__init__(
             lastTickTimestamp=instigator_data.last_tick_timestamp,
             lastRunKey=instigator_data.last_run_key,
+            lastCursor = instigator_data.cursor,
         )
 
 
